@@ -111,21 +111,23 @@
             box-shadow: 0 0 10px rgba(255, 204, 0, 0.8);
         }
 
-        /* 全螢幕按鈕 */
-        #fullscreen-btn {
+        /* 功能按鈕 (全螢幕 / 重置) */
+        .control-btn {
             position: fixed;
             top: 10px;
-            right: 10px;
             background: rgba(0,0,0,0.5);
             border: 1px solid white;
             color: white;
-            padding: 5px 10px;
-            font-size: 12px;
+            padding: 8px 12px;
+            font-size: 14px;
             z-index: 100;
             border-radius: 4px;
             margin: 0;
             box-shadow: none;
+            cursor: pointer;
         }
+        #fullscreen-btn { right: 10px; }
+        #reset-btn { left: 10px; display: none; } /* 預設隱藏，開始遊戲後顯示 */
 
         @media (max-width: 600px) {
             h1 { font-size: 18px; margin-top: 5px; }
@@ -143,9 +145,11 @@
 </head>
 <body>
 
-    <button id="fullscreen-btn" onclick="toggleFullScreen()">全螢幕</button>
+    <button id="reset-btn" class="control-btn" onclick="resetMap()">🔄 刷新地圖</button>
+    <button id="fullscreen-btn" class="control-btn" onclick="toggleFullScreen()">全螢幕</button>
+    
     <h1>🏰 The Demon Lord's Pet: Slime Sneak</h1>
-    <p>電腦：方向鍵移動 | 手機：虛擬搖桿拖曳｜如果路堵死了直接重新整理網頁開始遊戲｜碰莫爾迪斯有２秒無敵時間</p>
+    <p>電腦：方向鍵移動 | 手機：虛擬搖桿拖曳｜如果路堵死了直接重新開始｜碰莫爾迪斯有２秒無敵時間</p>
 
     <div id="game-container">
         <canvas id="gameCanvas"></canvas>
@@ -219,8 +223,7 @@ let npcs = [];
 let mordees = { active: false, x: 0, y: 0, timer: 0, text: "", bubbleTimer: 0 };
 let bossRoomBubble = { text: "", timer: 0, visible: false };
 
-// --- NPC 設定 (視野半徑加大) ---
-// 難度提升：range 數值增加
+// --- NPC 設定 ---
 const NPC_CONFIG = {
     ED: { 
         name: '艾德', speed: 0.8, fov: 70, range: 180, color: 'rgba(150, 100, 255, 0.4)', imgKey: 'ed', 
@@ -254,13 +257,12 @@ const WIN_MSGS = [
     "魔王大人笑了：「是你啊，小傢伙，謝謝你來看我。」"
 ];
 
-// --- 定義 NPC 活動區域 (格數座標) ---
-// 1. 左上 (避開安全區) 2. 右上/正中 3. 左下 4. 中下/右下 (避開魔王房)
+// --- NPC 活動區域 ---
 const NPC_ZONES = [
     { minX: 4, maxX: 9, minY: 1, maxY: 7 },   // Zone 1: 左上附近
     { minX: 10, maxX: 18, minY: 1, maxY: 7 }, // Zone 2: 右上/中間
     { minX: 1, maxX: 9, minY: 8, maxY: 13 },  // Zone 3: 左下
-    { minX: 10, maxX: 15, minY: 8, maxY: 13 } // Zone 4: 中下 (魔王房左側)
+    { minX: 10, maxX: 15, minY: 8, maxY: 13 } // Zone 4: 中下
 ];
 
 function resizeCanvas() {
@@ -271,6 +273,20 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 
+// --- 刷新地圖功能 ---
+function resetMap() {
+    if (gameState !== 'PLAYING') return; // 只有在遊戲進行中才允許刷新
+    generateMap();
+    spawnEntities();
+    // 重置玩家速度，避免殘留慣性
+    player.vx = 0;
+    player.vy = 0;
+    joystick.x = 0;
+    joystick.y = 0;
+    joystick.active = false;
+    joystickKnob.style.transform = `translate(-50%, -50%)`;
+}
+
 function startGame() {
     if (loadedCount < totalAssets) { alert("圖片載入中，請稍後..."); return; }
     resizeCanvas();
@@ -278,6 +294,9 @@ function startGame() {
     document.getElementById('start-screen').classList.add('hidden');
     document.getElementById('game-over-screen').classList.add('hidden');
     document.getElementById('win-screen').classList.add('hidden');
+    
+    // 顯示刷新按鈕
+    document.getElementById('reset-btn').style.display = 'block';
 
     generateMap();
     spawnEntities();
@@ -288,40 +307,33 @@ function startGame() {
 
 /**
  * 地圖生成 
- * 修正：魔王房間(右下角)固定開放一個入口
  */
 function generateMap() {
     map = [];
-    // 隨機決定魔王房入口是開在「左邊」還是「上面」
     const bossEntranceSide = Math.random() > 0.5 ? 'LEFT' : 'TOP';
 
     for (let y = 0; y < ROWS; y++) {
         let row = [];
         for (let x = 0; x < COLS; x++) {
-            // 邊界牆壁
             if (x === 0 || x === COLS - 1 || y === 0 || y === ROWS - 1) {
                 row.push(1);
             } 
-            // 魔王房間圍牆
             else if (x >= COLS - BOSS_ROOM_TILES && y >= ROWS - BOSS_ROOM_TILES) {
-                // 判斷是否為圍牆邊界
                 let isLeftWall = (x === COLS - BOSS_ROOM_TILES);
                 let isTopWall = (y === ROWS - BOSS_ROOM_TILES);
 
                 if (isLeftWall || isTopWall) {
-                    // 開門邏輯
                     let isEntrance = false;
                     if (bossEntranceSide === 'LEFT' && isLeftWall && y === ROWS - 2) isEntrance = true;
                     if (bossEntranceSide === 'TOP' && isTopWall && x === COLS - 2) isEntrance = true;
                     
-                    if (isEntrance) row.push(0); // 入口 (地板)
-                    else row.push(1); // 牆壁
+                    if (isEntrance) row.push(0); 
+                    else row.push(1);
                 } else {
-                    row.push(0); // 房間內部地板
+                    row.push(0);
                 }
             }
             else {
-                // 一般區域：安全區不生牆
                 if (x < SAFE_ZONE_TILES && y < SAFE_ZONE_TILES) row.push(0); 
                 else row.push(Math.random() < 0.2 ? 1 : 0); 
             }
@@ -338,17 +350,14 @@ function spawnEntities() {
 
     npcs = [];
     const availableTypes = [NPC_CONFIG.ED, NPC_CONFIG.CARLOS, NPC_CONFIG.ELAINE, NPC_CONFIG.AARON];
-    // 洗牌角色
     for (let i = availableTypes.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [availableTypes[i], availableTypes[j]] = [availableTypes[j], availableTypes[i]];
     }
     
-    // 為每個區域分配一個 NPC
     for (let i = 0; i < 4; i++) {
         let zone = NPC_ZONES[i];
         let type = availableTypes[i];
-        // 在該區域內找一個空位生成
         let pos = getRandomFreePositionInZone(zone);
         
         npcs.push({
@@ -358,11 +367,10 @@ function spawnEntities() {
             bubbleTimer: Math.random() * 120, 
             isBubbleVisible: false,
             currentBubbleText: "",
-            zone: zone // 綁定區域
+            zone: zone
         });
     }
 
-    // 莫爾迪斯 (全圖隨機)
     let mPos = getRandomFreePositionGlobal(); 
     mordees = {
         active: true, x: mPos.x, y: mPos.y,
@@ -376,31 +384,25 @@ function getRandomText() {
     return MORDEES_TEXTS[Math.floor(Math.random() * MORDEES_TEXTS.length)];
 }
 
-// 在指定區域內找空位
 function getRandomFreePositionInZone(zone) {
     let x, y;
     let maxAttempts = 100;
     do {
         x = Math.floor(Math.random() * (zone.maxX - zone.minX + 1)) + zone.minX;
         y = Math.floor(Math.random() * (zone.maxY - zone.minY + 1)) + zone.minY;
-        
         if (map[y][x] !== 1) return { x: x * TILE_SIZE + TILE_SIZE/2, y: y * TILE_SIZE + TILE_SIZE/2 };
         maxAttempts--;
     } while (maxAttempts > 0);
-    // 如果找不到，回傳區域中心 (避免當機)
     return { x: (zone.minX + (zone.maxX-zone.minX)/2) * TILE_SIZE, y: (zone.minY + (zone.maxY-zone.minY)/2) * TILE_SIZE };
 }
 
-// 全圖找空位 (避開安全區和魔王房)
 function getRandomFreePositionGlobal() {
     let x, y;
     do {
         x = Math.floor(Math.random() * (COLS - 2)) + 1;
         y = Math.floor(Math.random() * (ROWS - 2)) + 1;
-        
         let inSafeZone = (x < SAFE_ZONE_TILES && y < SAFE_ZONE_TILES);
         let inBossRoom = (x >= COLS - BOSS_ROOM_TILES && y >= ROWS - BOSS_ROOM_TILES);
-
         if (inSafeZone || inBossRoom) continue;
         if (map[y][x] !== 1) return { x: x * TILE_SIZE + TILE_SIZE/2, y: y * TILE_SIZE + TILE_SIZE/2 };
     } while (true);
@@ -417,19 +419,27 @@ function update() {
     // --- 玩家移動 ---
     let moveX = 0;
     let moveY = 0;
+    
     if (keys['ArrowUp'] || keys['w']) moveY = -1;
     if (keys['ArrowDown'] || keys['s']) moveY = 1;
     if (keys['ArrowLeft'] || keys['a']) moveX = -1;
     if (keys['ArrowRight'] || keys['d']) moveX = 1;
-    if (joystick.active) { moveX = joystick.x; moveY = joystick.y; }
+
+    if (joystick.active) {
+        moveX = joystick.x;
+        moveY = joystick.y;
+    }
 
     if (moveX !== 0 || moveY !== 0) {
         let len = Math.sqrt(moveX*moveX + moveY*moveY);
         if (len > 1) { moveX /= len; moveY /= len; } 
+        
         let nextX = player.x + moveX * PLAYER_SPEED;
         let nextY = player.y + moveY * PLAYER_SPEED;
+        
         if (!isWall(nextX, player.y)) player.x = nextX;
         if (!isWall(player.x, nextY)) player.y = nextY;
+        
         player.x = Math.max(20, Math.min(COLS * TILE_SIZE - 20, player.x));
         player.y = Math.max(20, Math.min(ROWS * TILE_SIZE - 20, player.y));
     }
@@ -482,7 +492,7 @@ function update() {
         return;
     }
 
-    // --- NPC 邏輯 (限制在 Zone 內) ---
+    // --- NPC 邏輯 ---
     for (let npc of npcs) {
         npc.moveTimer--;
         if (npc.moveTimer <= 0) {
@@ -492,14 +502,13 @@ function update() {
         let nx = npc.x + Math.cos(npc.moveDir) * npc.type.speed;
         let ny = npc.y + Math.sin(npc.moveDir) * npc.type.speed;
         
-        // 檢查牆壁 + 檢查是否超出 Zone 邊界
         if (isValidNpcPos(nx, ny) && isInsideZone(nx, ny, npc.zone)) {
             npc.x = nx;
             npc.y = ny;
             let targetAngle = npc.moveDir;
             npc.angle = lerpAngle(npc.angle, targetAngle, 0.1);
         } else {
-            npc.moveTimer = 0; // 撞牆或出界，換方向
+            npc.moveTimer = 0; 
         }
 
         npc.bubbleTimer--;
@@ -531,9 +540,7 @@ function update() {
     }
 }
 
-// 檢查 NPC 是否在分配的區域內
 function isInsideZone(x, y, zone) {
-    // 轉換回格子座標判斷，給予半格緩衝
     let gx = x / TILE_SIZE;
     let gy = y / TILE_SIZE;
     return (gx >= zone.minX && gx <= zone.maxX + 1 && gy >= zone.minY && gy <= zone.maxY + 1);
@@ -541,7 +548,6 @@ function isInsideZone(x, y, zone) {
 
 function isValidNpcPos(x, y) {
     if (isWall(x, y)) return false;
-    // 基本禁區 (安全區 & 魔王房內部) - 雖然 Zone 設定已避開，但雙重保險
     if (x < SAFE_ZONE_TILES * TILE_SIZE && y < SAFE_ZONE_TILES * TILE_SIZE) return false;
     if (x > (COLS - BOSS_ROOM_TILES) * TILE_SIZE && y > (ROWS - BOSS_ROOM_TILES) * TILE_SIZE) return false;
     return true;
@@ -649,7 +655,6 @@ function draw() {
     ctx.restore();
 }
 
-// 繪製氣泡 (尺寸已放大)
 function drawBubble(x, y, text, visible, isPermanent = false) {
     if (!visible || !text) return;
     
@@ -691,7 +696,6 @@ function isWall(x, y) {
     return map[gy][gx] === 1;
 }
 
-// 繪製視野
 function drawVisionCone(npc) {
     ctx.save();
     ctx.translate(npc.x, npc.y);
@@ -770,6 +774,9 @@ function gameOver(npc) {
     document.getElementById('fail-portrait').src = assets[npc.type.imgKey].src;
     let randomMsg = npc.type.msgs[Math.floor(Math.random() * npc.type.msgs.length)];
     document.getElementById('fail-reason').innerText = randomMsg;
+    
+    // 隱藏刷新按鈕
+    document.getElementById('reset-btn').style.display = 'none';
 }
 
 function gameWin() {
@@ -778,6 +785,9 @@ function gameWin() {
     document.getElementById('ui-layer').classList.remove('hidden');
     document.getElementById('win-screen').classList.remove('hidden');
     document.getElementById('win-msg').innerText = WIN_MSGS[Math.floor(Math.random() * WIN_MSGS.length)];
+    
+    // 隱藏刷新按鈕
+    document.getElementById('reset-btn').style.display = 'none';
 }
 
 const keys = {};
@@ -852,4 +862,3 @@ resizeCanvas();
 </script>
 </body>
 </html>
-
