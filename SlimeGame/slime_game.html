@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>魔王寵物史萊姆：秘密潛行</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #222;
+            color: white;
+            font-family: "Microsoft JhengHei", sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        h1 { margin: 10px 0; font-size: 24px; color: #ffcc00; text-shadow: 2px 2px 0 #5c0000; }
+        p { margin: 5px 0; color: #aaa; font-size: 14px; }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            border: 4px solid #444;
+            border-radius: 4px;
+        }
+
+        canvas {
+            background-color: #1a1a1a;
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 10;
+            text-align: center;
+        }
+
+        .hidden { display: none !important; }
+
+        button {
+            background: #8b0000;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 20px;
+            cursor: pointer;
+            border-radius: 5px;
+            margin-top: 20px;
+            transition: transform 0.1s;
+            font-family: inherit;
+            border: 2px solid #ff4d4d;
+        }
+        button:hover { transform: scale(1.05); background: #a00000; }
+        
+        .npc-portrait { width: 64px; height: 64px; image-rendering: pixelated; border-radius: 50%; background: #444; margin-bottom: 10px; border: 2px solid white;}
+        #fail-reason { font-size: 18px; max-width: 80%; line-height: 1.5; color: #ffcccc; }
+    </style>
+</head>
+<body>
+
+    <h1>🏰 魔王寵物史萊姆：秘密潛行</h1>
+    <p>躲避視線 | 莫爾迪斯每2秒會瞬移 | 左上角為安全區 | 目標：右下角魔王房間</p>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <!-- UI 介面 -->
+        <div id="ui-layer">
+            <div id="start-screen">
+                <img src="Slime.png" style="width:80px; image-rendering: pixelated;">
+                <h2>史萊姆的療癒大作戰</h2>
+                <p>魔王大人正為了城堡破爛而煩惱...<br>身為貼心寵物的你，決定潛入魔王房間給他一個擁抱！<br>但是...千萬別被那些神經質的部下發現了！</p>
+                <button onclick="startGame()">開始潛行</button>
+            </div>
+            
+            <div id="game-over-screen" class="hidden">
+                <img id="fail-portrait" class="npc-portrait" src="">
+                <h2 style="color: #ff4d4d">被發現了！</h2>
+                <p id="fail-reason">NPC 台詞...</p>
+                <button onclick="startGame()">重新挑戰</button>
+            </div>
+
+            <div id="win-screen" class="hidden">
+                <img src="Slime.png" style="width:80px; image-rendering: pixelated;">
+                <h2 style="color: #ffcc00">任務完成！</h2>
+                <p>你成功鑽進了魔王大人的懷裡！<br>魔王大人被你的軟Q療癒了，心情變好了！</p>
+                <button onclick="startGame()">再玩一次</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+/**
+ * 遊戲設定與資源載入
+ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// 遊戲參數
+const TILE_SIZE = 40;
+const COLS = 20;
+const ROWS = 15;
+const PLAYER_SPEED = 3; 
+const SAFE_ZONE_TILES = 4; // 左上角安全區大小 (4x4)
+const BOSS_ROOM_TILES = 4; // 右下角魔王房間大小 (4x4)
+
+// 圖片資源庫
+const assets = {
+    slime: { src: 'Slime.png', img: null },
+    aaron: { src: 'ARON.png', img: null },
+    carlos: { src: 'CAROS.png', img: null },
+    ed: { src: 'ed.png', img: null },
+    elaine: { src: 'ELAN.png', img: null },
+    mordees: { src: 'MORDEES.png', img: null }
+};
+
+let loadedCount = 0;
+const totalAssets = Object.keys(assets).length;
+for (let key in assets) {
+    const img = new Image();
+    img.src = assets[key].src;
+    img.onload = () => { loadedCount++; };
+    assets[key].img = img;
+}
+
+// 遊戲狀態
+let gameState = 'MENU'; 
+let map = []; // 0: 地板, 1: 牆壁
+let player = { x: 0, y: 0, vx: 0, vy: 0, invincible: false, invincibleTimer: 0 };
+let npcs = [];
+let mordees = { active: false, x: 0, y: 0, timer: 0, text: "", bubbleTimer: 0 };
+
+// --- NPC 設定檔 (更新：碎碎念 bubbleTexts 清單) ---
+const NPC_CONFIG = {
+    ED: { 
+        name: '艾德', speed: 0.8, fov: 70, range: 150, color: 'rgba(150, 100, 255, 0.3)', imgKey: 'ed', 
+        bubbleTexts: ["這個月又要吃土了", "我該拿私房錢出來嗎？", "那裡的牆壁又塌了…"],
+        msgs: [
+            "「史萊姆大人，您這是要去哪啊？」",
+            "「唉，地板又髒了，請不要隨處亂跑。」",
+            "「現在不是玩耍的時間，請回吧。」"
+        ]
+    },
+    CARLOS: { 
+        name: '卡洛斯', speed: 2.5, fov: 30, range: 180, color: 'rgba(255, 50, 50, 0.3)', imgKey: 'carlos', 
+        bubbleTexts: ["我要變強！", "不能去找魔王大人嗎？", "肚子好餓喔"],
+        msgs: [
+            "「不准去打擾魔王大人！回去！」",
+            "「哼，想溜過去？還早了一百年！」",
+            "「這裡禁止通行！去去去，一邊玩去。」"
+        ]
+    },
+    ELAINE: { 
+        name: '伊萊恩', speed: 1.0, fov: 50, range: 160, color: 'rgba(100, 200, 255, 0.3)', imgKey: 'elaine', 
+        bubbleTexts: ["魔王大人有吃飯嗎？", "該送點心給魔王大人", "魔王大人有休息嗎？"],
+        msgs: [
+            "「史萊姆大人，這裡不能通過喔……」",
+            "「為了大人的安寧，請您安靜一點。」",
+            "「這可不行，被發現的話我會很困擾的。」"
+        ]
+    },
+    AARON: { 
+        name: '勇者亞倫', speed: 1.5, fov: 45, range: 140, color: 'rgba(255, 200, 0, 0.3)', imgKey: 'aaron', 
+        bubbleTexts: ["這裡是哪裡？", "魔王的房間在哪？", "迷路了……"],
+        msgs: [
+            "「嗚哇！史萊姆！...抱歉，我條件反射拔劍了。」",
+            "「欸？等等，魔王的房間是在這邊嗎？」",
+            "「別擋路，小傢伙，我要去討伐魔王！」"
+        ]
+    }
+};
+
+const MORDEES_TEXTS = [
+    "好閒喔~",
+    "好無聊喔",
+    "小魔王現在在做什麼呀?",
+    "呼哇~ (打哈欠)",
+    "這裡有藏寶藏嗎?",
+    "哎呀，被發現了嗎?",
+    "當前任魔王真輕鬆~"
+];
+
+function startGame() {
+    if (loadedCount < totalAssets) { alert("圖片載入中，請稍後..."); return; }
+    document.getElementById('ui-layer').classList.add('hidden');
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('game-over-screen').classList.add('hidden');
+    document.getElementById('win-screen').classList.add('hidden');
+
+    generateMap();
+    spawnEntities();
+    
+    gameState = 'PLAYING';
+    gameLoop();
+}
+
+/**
+ * 地圖生成
+ */
+function generateMap() {
+    map = [];
+    for (let y = 0; y < ROWS; y++) {
+        let row = [];
+        for (let x = 0; x < COLS; x++) {
+            // 1. 邊界牆壁
+            if (x === 0 || x === COLS - 1 || y === 0 || y === ROWS - 1) {
+                row.push(1);
+            } 
+            // 2. 魔王房間 (右下角) 圍牆
+            else if (x === COLS - BOSS_ROOM_TILES && y >= ROWS - BOSS_ROOM_TILES) {
+                // 入口：在 y = ROWS - 2 的地方開洞
+                if (y === ROWS - 2) row.push(0);
+                else row.push(1);
+            }
+            else if (y === ROWS - BOSS_ROOM_TILES && x >= COLS - BOSS_ROOM_TILES) {
+                row.push(1);
+            }
+            else {
+                // 3. 一般區域
+                // 確保安全區 (左上) 和 魔王房間內部 (右下) 沒有隨機牆
+                if (x < SAFE_ZONE_TILES && y < SAFE_ZONE_TILES) row.push(0); // 安全區
+                else if (x > COLS - BOSS_ROOM_TILES && y > ROWS - BOSS_ROOM_TILES) row.push(0); // 魔王房間內
+                else row.push(Math.random() < 0.2 ? 1 : 0); // 隨機牆
+            }
+        }
+        map.push(row);
+    }
+}
+
+function spawnEntities() {
+    player.x = TILE_SIZE * 1.5;
+    player.y = TILE_SIZE * 1.5;
+    player.invincible = false;
+    player.invincibleTimer = 0;
+
+    npcs = [];
+    const availableTypes = [NPC_CONFIG.ED, NPC_CONFIG.CARLOS, NPC_CONFIG.ELAINE, NPC_CONFIG.AARON];
+    // 洗牌
+    for (let i = availableTypes.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [availableTypes[i], availableTypes[j]] = [availableTypes[j], availableTypes[i]];
+    }
+    
+    let count = 3 + Math.floor(Math.random() * 2); 
+    for (let i = 0; i < count; i++) {
+        let pos = getRandomFreePosition(false, false); 
+        let type = availableTypes[i];
+        
+        npcs.push({
+            x: pos.x, y: pos.y, type: type,
+            angle: Math.random() * Math.PI * 2,
+            moveTimer: 0, moveDir: Math.random() * Math.PI * 2,
+            // 碎碎念系統初始化
+            bubbleTimer: Math.random() * 120, // 隨機初始延遲
+            isBubbleVisible: false,
+            currentBubbleText: ""
+        });
+    }
+
+    // 莫爾迪斯
+    let mPos = getRandomFreePosition(false, true); 
+    mordees = {
+        active: true, x: mPos.x, y: mPos.y,
+        timer: 120, text: getRandomText(), bubbleTimer: 60
+    };
+}
+
+function getRandomText() {
+    return MORDEES_TEXTS[Math.floor(Math.random() * MORDEES_TEXTS.length)];
+}
+
+function getRandomFreePosition(allowSafeZone, allowBossRoom) {
+    let x, y;
+    let maxAttempts = 100;
+    do {
+        x = Math.floor(Math.random() * (COLS - 2)) + 1;
+        y = Math.floor(Math.random() * (ROWS - 2)) + 1;
+        
+        let inSafeZone = (x < SAFE_ZONE_TILES && y < SAFE_ZONE_TILES);
+        let inBossRoom = (x >= COLS - BOSS_ROOM_TILES && y >= ROWS - BOSS_ROOM_TILES);
+
+        if (!allowSafeZone && inSafeZone) continue;
+        if (!allowBossRoom && inBossRoom) continue;
+        
+        if (map[y][x] !== 1) {
+            return { x: x * TILE_SIZE + TILE_SIZE/2, y: y * TILE_SIZE + TILE_SIZE/2 };
+        }
+        maxAttempts--;
+    } while (maxAttempts > 0);
+    return { x: TILE_SIZE * 5, y: TILE_SIZE * 5 }; 
+}
+
+function gameLoop() {
+    if (gameState !== 'PLAYING') return;
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+function update() {
+    // --- 玩家移動 ---
+    let nextX = player.x + player.vx * PLAYER_SPEED;
+    let nextY = player.y + player.vy * PLAYER_SPEED;
+    if (!isWall(nextX, player.y)) player.x = nextX;
+    if (!isWall(player.x, nextY)) player.y = nextY;
+    player.x = Math.max(20, Math.min(canvas.width - 20, player.x));
+    player.y = Math.max(20, Math.min(canvas.height - 20, player.y));
+
+    if (player.invincible) {
+        player.invincibleTimer--;
+        if (player.invincibleTimer <= 0) player.invincible = false;
+    }
+
+    // --- 莫爾迪斯 ---
+    if (mordees.active) {
+        if (dist(player.x, player.y, mordees.x, mordees.y) < 30) {
+            player.invincible = true;
+            player.invincibleTimer = 120; 
+            // 瞬移
+            let newPos = getRandomFreePosition(false, true);
+            mordees.x = newPos.x; mordees.y = newPos.y;
+            mordees.timer = 120;
+            mordees.text = "哎呀~";
+            mordees.bubbleTimer = 60;
+        }
+
+        mordees.timer--;
+        if (mordees.timer <= 0) {
+            // 定時瞬移
+            let newPos = getRandomFreePosition(false, true);
+            mordees.x = newPos.x; mordees.y = newPos.y;
+            mordees.timer = 120;
+            mordees.text = getRandomText();
+            mordees.bubbleTimer = 90;
+        }
+        if (mordees.bubbleTimer > 0) mordees.bubbleTimer--;
+    }
+
+    // --- 勝利檢查 ---
+    if (player.x > (COLS - 3) * TILE_SIZE && player.y > (ROWS - 3) * TILE_SIZE) {
+        gameWin();
+        return;
+    }
+
+    // --- NPC 邏輯 ---
+    for (let npc of npcs) {
+        // AI 移動
+        npc.moveTimer--;
+        if (npc.moveTimer <= 0) {
+            npc.moveDir = Math.random() * Math.PI * 2;
+            npc.moveTimer = 60 + Math.random() * 60;
+        }
+        let nx = npc.x + Math.cos(npc.moveDir) * npc.type.speed;
+        let ny = npc.y + Math.sin(npc.moveDir) * npc.type.speed;
+        
+        if (isValidNpcPos(nx, ny)) {
+            npc.x = nx;
+            npc.y = ny;
+            let targetAngle = npc.moveDir;
+            npc.angle = lerpAngle(npc.angle, targetAngle, 0.1);
+        } else {
+            npc.moveTimer = 0; 
+        }
+
+        // --- 碎碎念氣泡邏輯 ---
+        npc.bubbleTimer--;
+        if (npc.bubbleTimer <= 0) {
+            if (npc.isBubbleVisible) {
+                // 隱藏氣泡
+                npc.isBubbleVisible = false;
+                npc.bubbleTimer = 120 + Math.random() * 120; // 沉默 2-4 秒
+            } else {
+                // 顯示新氣泡
+                npc.isBubbleVisible = true;
+                // 從清單中隨機選一句
+                let texts = npc.type.bubbleTexts;
+                npc.currentBubbleText = texts[Math.floor(Math.random() * texts.length)];
+                npc.bubbleTimer = 120; // 顯示 2 秒
+            }
+        }
+
+        // 偵測
+        if (!player.invincible) {
+            let playerInSafeZone = (player.x < SAFE_ZONE_TILES * TILE_SIZE && player.y < SAFE_ZONE_TILES * TILE_SIZE);
+            if (!playerInSafeZone) {
+                if (checkDetection(npc, player)) {
+                    gameOver(npc);
+                    return;
+                }
+                if (dist(player.x, player.y, npc.x, npc.y) < 25) {
+                    gameOver(npc);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+function isValidNpcPos(x, y) {
+    if (isWall(x, y)) return false;
+    // 禁區：安全區 & 魔王房
+    if (x < SAFE_ZONE_TILES * TILE_SIZE && y < SAFE_ZONE_TILES * TILE_SIZE) return false;
+    if (x > (COLS - BOSS_ROOM_TILES) * TILE_SIZE && y > (ROWS - BOSS_ROOM_TILES) * TILE_SIZE) return false;
+    return true;
+}
+
+function draw() {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 繪製地圖
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            let px = x * TILE_SIZE;
+            let py = y * TILE_SIZE;
+            if (map[y][x] === 1) {
+                ctx.fillStyle = '#444';
+                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.strokeStyle = '#222';
+                ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
+            } else {
+                ctx.strokeStyle = '#2a2a2a';
+                if (x < SAFE_ZONE_TILES && y < SAFE_ZONE_TILES) ctx.fillStyle = '#1a2a1a'; 
+                else if (x > COLS - BOSS_ROOM_TILES && y > ROWS - BOSS_ROOM_TILES) ctx.fillStyle = '#2a1a1a'; 
+                else ctx.fillStyle = '#1a1a1a';
+                
+                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
+            }
+        }
+    }
+
+    // 終點
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px Arial';
+    ctx.fillText("魔王房間", (COLS-2.5)*TILE_SIZE, (ROWS-2.5)*TILE_SIZE);
+
+    // 莫爾迪斯
+    if (mordees.active) {
+        ctx.drawImage(assets.mordees.img, mordees.x - 16, mordees.y - 16, 32, 32);
+        drawBubble(mordees.x, mordees.y, mordees.text, mordees.bubbleTimer > 0);
+    }
+
+    // NPC
+    for (let npc of npcs) {
+        if (!player.invincible) drawVisionCone(npc);
+        
+        ctx.save();
+        ctx.translate(npc.x, npc.y);
+        if (Math.cos(npc.angle) < 0) ctx.scale(-1, 1);
+        ctx.drawImage(assets[npc.type.imgKey].img, -20, -20, 40, 40);
+        ctx.restore();
+
+        // 碎碎念氣泡
+        drawBubble(npc.x, npc.y, npc.currentBubbleText, npc.isBubbleVisible, false);
+    }
+
+    // 玩家
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    if (player.invincible) {
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 25, 0, Math.PI*2);
+        ctx.strokeStyle = 'gold';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = 'white';
+        ctx.font = '12px Arial';
+        ctx.fillText((player.invincibleTimer/60).toFixed(1), -10, -25);
+    }
+    let scale = 1 + Math.sin(Date.now() / 100) * 0.05;
+    ctx.scale(scale, 1/scale);
+    ctx.drawImage(assets.slime.img, -16, -16, 32, 32);
+    ctx.restore();
+    
+    // 安全區提示
+    if (player.x < SAFE_ZONE_TILES * TILE_SIZE && player.y < SAFE_ZONE_TILES * TILE_SIZE) {
+        ctx.fillStyle = '#4caf50';
+        ctx.font = 'bold 16px Microsoft JhengHei';
+        ctx.fillText("安全區", 20, 30);
+    }
+}
+
+// 繪製氣泡
+function drawBubble(x, y, text, visible, isPermanent = false) {
+    if (!visible || !text) return;
+    
+    ctx.save();
+    ctx.font = '10px Microsoft JhengHei';
+    let width = ctx.measureText(text).width + 8;
+    let height = 16;
+    let yOffset = -40; 
+
+    // 背景
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fillRect(x - width/2, y + yOffset, width, height);
+    ctx.strokeStyle = '#333';
+    ctx.strokeRect(x - width/2, y + yOffset, width, height);
+    
+    // 文字
+    ctx.fillStyle = '#000';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + yOffset + height/2);
+    
+    // 三角形
+    ctx.beginPath();
+    ctx.moveTo(x, y + yOffset + height);
+    ctx.lineTo(x - 4, y + yOffset + height + 4);
+    ctx.lineTo(x + 4, y + yOffset + height);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fill();
+    ctx.stroke(); // 幫箭頭也加邊框
+    ctx.restore();
+}
+
+function isWall(x, y) {
+    let gx = Math.floor(x / TILE_SIZE);
+    let gy = Math.floor(y / TILE_SIZE);
+    if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return true;
+    return map[gy][gx] === 1;
+}
+
+function drawVisionCone(npc) {
+    ctx.save();
+    ctx.translate(npc.x, npc.y);
+    ctx.rotate(npc.angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    let halfFov = (npc.type.fov * Math.PI / 180) / 2;
+    ctx.arc(0, 0, npc.type.range, -halfFov, halfFov);
+    ctx.closePath();
+    ctx.fillStyle = npc.type.color;
+    ctx.fill();
+    ctx.restore();
+}
+
+function checkDetection(npc, player) {
+    let d = dist(npc.x, npc.y, player.x, player.y);
+    if (d > npc.type.range) return false;
+
+    let dx = player.x - npc.x;
+    let dy = player.y - npc.y;
+    let angleToPlayer = Math.atan2(dy, dx);
+    let angleDiff = angleToPlayer - npc.angle;
+    while (angleDiff <= -Math.PI) angleDiff += Math.PI * 2;
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+
+    let halfFov = (npc.type.fov * Math.PI / 180) / 2;
+    
+    if (Math.abs(angleDiff) <= halfFov) {
+        let steps = Math.ceil(d / 10); 
+        for (let i = 1; i < steps; i++) {
+            let t = i / steps;
+            let checkX = npc.x + dx * t;
+            let checkY = npc.y + dy * t;
+            if (isWall(checkX, checkY)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+function dist(x1, y1, x2, y2) { return Math.sqrt((x1-x2)**2 + (y1-y2)**2); }
+function lerpAngle(a, b, t) {
+    let diff = b - a;
+    while (diff <= -Math.PI) diff += Math.PI * 2;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    return a + diff * t;
+}
+
+function gameOver(npc) {
+    gameState = 'GAMEOVER';
+    document.getElementById('ui-layer').classList.remove('hidden');
+    document.getElementById('game-over-screen').classList.remove('hidden');
+    document.getElementById('fail-portrait').src = assets[npc.type.imgKey].src;
+    let randomMsg = npc.type.msgs[Math.floor(Math.random() * npc.type.msgs.length)];
+    document.getElementById('fail-reason').innerText = randomMsg;
+}
+
+function gameWin() {
+    gameState = 'WIN';
+    document.getElementById('ui-layer').classList.remove('hidden');
+    document.getElementById('win-screen').classList.remove('hidden');
+}
+
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.key] = true; updatePlayerVel(); });
+window.addEventListener('keyup', e => { keys[e.key] = false; updatePlayerVel(); });
+function updatePlayerVel() {
+    player.vx = 0; player.vy = 0;
+    if (keys['ArrowUp'] || keys['w']) player.vy = -1;
+    if (keys['ArrowDown'] || keys['s']) player.vy = 1;
+    if (keys['ArrowLeft'] || keys['a']) player.vx = -1;
+    if (keys['ArrowRight'] || keys['d']) player.vx = 1;
+}
+</script>
+</body>
+</html>
